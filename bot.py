@@ -8,12 +8,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 BOT_TOKEN = "7900980456:AAEZlR4zRWqkFeDfEU0j3KvWaPc5f4ZveRg"
 ADMIN_ID = 6884014716
 CHANNEL_USERNAME = "@kinolashamz"
+DB_PATH = "./kino.db"
 # ==================================================
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-db = sqlite3.connect("kino.db")
+db = sqlite3.connect(DB_PATH)
 cur = db.cursor()
 
 # =================== DATABASE ======================
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS movies (
 cur.execute("""
 CREATE TABLE IF NOT EXISTS saved (
     user_id INTEGER,
-    movie_id INTEGER
+    movie_id INTEGER,
+    UNIQUE(user_id, movie_id)
 )
 """)
 
@@ -44,38 +46,35 @@ db.commit()
 # ==================================================
 
 # =================== OBUNA TEKSHIRISH ===================
-async def check_sub(user_id):
+async def check_sub(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        return member.status in ("member", "administrator", "creator")
     except:
         return False
 
 # =================== START ===================
 @dp.message(F.text.startswith("/start"))
 async def start(msg: Message):
-    user_name = msg.from_user.full_name
-    text = msg.text
+    user = msg.from_user
+    param = msg.text.split(maxsplit=1)[1] if len(msg.text.split()) > 1 else None
 
-    param = None
-    if len(text.split()) > 1:
-        param = text.split()[1]
+    kb_sub = InlineKeyboardBuilder()
+    kb_sub.button(text="✅ Kanalga obuna bo‘lish", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")
+    kb_sub.button(text="🔄 Tekshirish", callback_data="check_sub")
+    kb_sub.adjust(2)
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Kanalga obuna bo‘lish", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")
-    kb.button(text="🔍 Tekshirish", callback_data="check_sub")
-    kb.adjust(2)
-
-    if not await check_sub(msg.from_user.id):
+    if not await check_sub(user.id):
         await msg.answer(
-            f"Salom {user_name}!\nBotdan foydalanish uchun kanalga obuna bo‘ling 👇",
-            reply_markup=kb.as_markup()
+            f"Salom {user.full_name} 👋\n"
+            f"Botdan foydalanish uchun kanalga obuna bo‘ling.",
+            reply_markup=kb_sub.as_markup()
         )
         return
 
     cur.execute(
         "INSERT OR IGNORE INTO users VALUES (?,?)",
-        (msg.from_user.id, msg.from_user.username)
+        (user.id, user.username)
     )
     db.commit()
 
@@ -91,38 +90,25 @@ async def start(msg: Message):
         else:
             await msg.answer("❌ Bu kodda kino topilmadi")
 
-    kb2 = InlineKeyboardBuilder()
-    kb2.button(text="🔍 Inline qidiruv", switch_inline_query_current_chat="")
-    kb2.adjust(1)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔍 Inline qidiruv", switch_inline_query_current_chat="")
+    kb.adjust(1)
 
     await msg.answer(
-        f"🎬 Xush kelibsiz, {user_name}!\n\n"
-        f"🔎 Inline qidiruv orqali kino toping yoki 3 xonali kod yuboring.",
-        reply_markup=kb2.as_markup()
+        "🎬 Xush kelibsiz!\n"
+        "🔎 Kino nomi bilan inline qidiring yoki 3 xonali kod yuboring.",
+        reply_markup=kb.as_markup()
     )
 
-# =================== OBUNA TEKSHIRISH TUGMASI ===================
+# =================== OBUNA TEKSHIRISH ===================
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription(call: CallbackQuery):
     if await check_sub(call.from_user.id):
-        cur.execute(
-            "INSERT OR IGNORE INTO users VALUES (?,?)",
-            (call.from_user.id, call.from_user.username)
-        )
-        db.commit()
-
-        kb2 = InlineKeyboardBuilder()
-        kb2.button(text="🔍 Inline qidiruv", switch_inline_query_current_chat="")
-        kb2.adjust(1)
-
-        await call.message.edit_text(
-            "✅ Obuna tasdiqlandi!\nInline qidiruvdan foydalanishingiz mumkin.",
-            reply_markup=kb2.as_markup()
-        )
+        await call.message.edit_text("✅ Obuna tasdiqlandi. Endi foydalanishingiz mumkin.")
     else:
         await call.answer("❌ Hali obuna bo‘lmadingiz", show_alert=True)
 
-# =================== INLINE QIDIRUV (TO‘G‘RILANGAN) ===================
+# =================== INLINE QIDIRUV ===================
 @dp.inline_query()
 async def inline_search(query: InlineQuery):
     text = query.query.strip()
@@ -137,18 +123,17 @@ async def inline_search(query: InlineQuery):
     )
     movies = cur.fetchall()
 
-    results = []
-    for code, title in movies:
-        results.append(
-            InlineQueryResultArticle(
-                id=code,
-                title=title,
-                description=f"Kod: {code}",
-                input_message_content=InputTextMessageContent(
-                    message_text=f"🎬 {title}\n🔢 Kod: {code}\n\n👉 Kodni botga yuboring"
-                )
+    results = [
+        InlineQueryResultArticle(
+            id=code,
+            title=title,
+            description=f"Kod: {code}",
+            input_message_content=InputTextMessageContent(
+                message_text=f"🎬 {title}\n🔢 Kod: {code}\n\n👉 Kodni botga yuboring"
             )
         )
+        for code, title in movies
+    ]
 
     await query.answer(results, cache_time=1)
 
@@ -156,15 +141,12 @@ async def inline_search(query: InlineQuery):
 @dp.message(F.text.regexp(r"^\d{3}$"))
 async def by_code(msg: Message):
     if not await check_sub(msg.from_user.id):
-        kb = InlineKeyboardBuilder()
-        kb.button(text="✅ Kanalga obuna bo‘lish", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")
-        kb.button(text="🔍 Tekshirish", callback_data="check_sub")
-        kb.adjust(2)
-        await msg.answer("❗ Avval kanalga obuna bo‘ling", reply_markup=kb.as_markup())
+        await msg.answer("❗ Avval kanalga obuna bo‘ling")
         return
 
     cur.execute("SELECT id, title, file_id FROM movies WHERE code=?", (msg.text,))
     movie = cur.fetchone()
+
     if not movie:
         await msg.answer("❌ Bu kodda kino topilmadi")
         return
@@ -183,7 +165,10 @@ async def by_code(msg: Message):
 @dp.callback_query(F.data.startswith("save_"))
 async def save_movie(call: CallbackQuery):
     movie_id = int(call.data.split("_")[1])
-    cur.execute("INSERT INTO saved VALUES (?,?)", (call.from_user.id, movie_id))
+    cur.execute(
+        "INSERT OR IGNORE INTO saved VALUES (?,?)",
+        (call.from_user.id, movie_id)
+    )
     db.commit()
     await call.answer("💾 Saqlandi")
 
@@ -195,9 +180,7 @@ async def panel(msg: Message):
 
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Kino qo‘shish", callback_data="add")
-    kb.button(text="🗑 Kino o‘chirish", callback_data="del")
     kb.button(text="📊 Statistika", callback_data="stat")
-    kb.button(text="📢 Xabar yuborish", callback_data="send")
     kb.adjust(1)
 
     await msg.answer("🛠 Admin panel", reply_markup=kb.as_markup())
@@ -205,7 +188,9 @@ async def panel(msg: Message):
 # =================== KINO QO‘SHISH ===================
 @dp.callback_query(F.data == "add")
 async def add_info(call: CallbackQuery):
-    await call.message.answer("🎬 Video yuboring\nCaption: `001|Kino nomi`")
+    await call.message.answer(
+        "🎬 Video yuboring\nCaption format:\n`001|Kino nomi`"
+    )
 
 @dp.message(F.video & (F.from_user.id == ADMIN_ID))
 async def add_movie(msg: Message):
@@ -214,15 +199,21 @@ async def add_movie(msg: Message):
         return
 
     code, title = msg.caption.split("|", 1)
+    code = code.strip()
+
+    if not code.isdigit() or len(code) != 3:
+        await msg.answer("❌ Kod aniq 3 xonali bo‘lishi kerak (001)")
+        return
+
     try:
         cur.execute(
-            "INSERT INTO movies (code,title,file_id) VALUES (?,?,?)",
-            (code.strip(), title.strip(), msg.video.file_id)
+            "INSERT INTO movies (code, title, file_id) VALUES (?,?,?)",
+            (code, title.strip(), msg.video.file_id)
         )
         db.commit()
-        await msg.answer("✅ Kino qo‘shildi")
+        await msg.answer(f"✅ Kino qo‘shildi\n🔢 Kod: {code}")
     except:
-        await msg.answer("❌ Bu kod mavjud")
+        await msg.answer("❌ Bu kod allaqachon mavjud")
 
 # =================== STAT ===================
 @dp.callback_query(F.data == "stat")
